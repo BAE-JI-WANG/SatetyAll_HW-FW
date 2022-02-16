@@ -42,12 +42,15 @@
 -------
 # 펌웨어(FW)
 
+### * 라이브러리 호출
+
 ``` c++
 #include <Wire.h>
 #include <SparkFun_APDS9960.h>
 #include "BluetoothSerial.h"
 ```
-라이브러리 호출
+
+### * 변수 부
 
 ``` c++
 #if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
@@ -93,7 +96,7 @@ double prev_sv; // 알고리즘 계산 값 저장
 
 BluetoothSerial SerialBT; // 블루투스 시리얼 라이브러리
 ```
-변수 부
+### * 셋업함수 
 
 ``` c++
 void setup() 
@@ -136,7 +139,7 @@ void setup()
 }
 ```
 
-셋업부
+### * 움직임 체크 함수
 
 ``` c++
 boolean check_movement(float ch_AcX, float ch_AcY, float ch_AcZ, float ch_GyX, float ch_GyY, float ch_GyZ)
@@ -151,7 +154,7 @@ boolean check_movement(float ch_AcX, float ch_AcY, float ch_AcZ, float ch_GyX, f
   }
 }
 ```
-움직임 체크 함수
+### * 셋업당시 센서값과 현재 센서값 비교 함수
 
 ``` c++
 boolean compare(float AcX, float AcY, float AcZ, float GyX, float GyY, float GyZ)
@@ -166,7 +169,7 @@ boolean compare(float AcX, float AcY, float AcZ, float GyX, float GyY, float GyZ
   }
 }
 ```
-셋업당시 센서값과 현재 센서값 비교 함수
+### * 루프 함수
 
 ``` c++
 void loop() {
@@ -331,7 +334,8 @@ void loop() {
    delay(100);   
 }
 ```
-루프 함수
+### * 센서 초기화 함수
+
 ``` c++
 void initSensor() {
   Wire.begin();
@@ -341,7 +345,8 @@ void initSensor() {
   Wire.endTransmission(true);
 }
 ```
-센서 초기화 함수
+### * 센서 데이터 처리 함수
+
 ``` c++
 void getData() {
   Wire.beginTransmission(MPU_ADDR);
@@ -357,7 +362,7 @@ void getData() {
   GyZ = Wire.read() << 8 | Wire.read();
 }
 ```
-센서 데이터 처리 함수
+### * loop 한 사이클동안 걸리는 시간을 알기위한 함수
 
 ``` c++
 void getDT() {
@@ -366,7 +371,8 @@ void getDT() {
   past = now;
 }
 ```
-loop 한 사이클동안 걸리는 시간을 알기위한 함수
+### * 센서의 초기값을 10회 정도 평균값으로 구하여 저장하는 함수
+
 ``` c++
 void caliSensor() {
   double sumAcX = 0 , sumAcY = 0, sumAcZ = 0;
@@ -382,4 +388,4 @@ void caliSensor() {
   averGyX=sumGyX/10;  averGyY=sumGyY/10;  averGyZ=sumGyZ/10;
 }
 ```
-센서의 초기값을 10회 정도 평균값으로 구하여 저장하는 함수
+
