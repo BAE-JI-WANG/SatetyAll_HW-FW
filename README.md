@@ -1,7 +1,7 @@
 # SatetyAll_HW-FW
  스마트 안전관리 시스템 (H/W&amp;F/W)
  
- ## react 웹 링크 : https://github.com/S-jooyoung/SafetyAll
+ ## 관리자 용 웹페이지 : https://github.com/S-jooyoung/SafetyAll
 
   # 하드웨어(HW)
 
