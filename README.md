@@ -1,8 +1,9 @@
 # SatetyAll_HW-FW
  스마트 안전관리 시스템 (H/W&amp;F/W)
  
- ## 관리자 용 웹페이지 : https://github.com/S-jooyoung/SafetyAll
-
+### 관리자 용 웹페이지 : https://github.com/S-jooyoung/SafetyAll
+### 작업자 용 안드로이드 어플 : https://github.com/95Seo/SafetyAll_App
+ 
   # 하드웨어(HW)
 
 ##  1차 프로토 타입
