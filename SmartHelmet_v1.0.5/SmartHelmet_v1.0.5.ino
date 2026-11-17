@@ -68,6 +68,10 @@ const int WEAR_PROXIMITY_MIN = 100;
 // 움직임 판정: 기준값(prev_*) 대비 변화량(원시값) 임계값
 const float MOVE_ACC_THRESHOLD = 200;
 const float MOVE_GYRO_THRESHOLD = 50;
+// 움직임으로 인정하기 위해 임계값을 넘어야 하는 축 수 (1~6). 6이면 6축 모두 넘어야 하는 기존 동작
+// ※ 임계값이 센서 노이즈 수준(가속도 200 ≈ 0.012g, 자이로 50 ≈ 0.4°/s)이라, 값을 낮추면 정지 상태 노이즈도 움직임으로 판정될 수 있음
+//   낮추려면 임계값도 함께 실측해서 다시 맞출 것
+const int MOVE_MIN_AXES = 6;
 // 이 횟수 이상 루프가 지난 뒤에도 움직임이 없으면 'W' 경고 전송 (약 30초 이상)
 const int NO_MOVE_LOOPS = 300;
 
@@ -123,18 +127,19 @@ void setup()
   }
 }
 
-// 기준값(prev_*) 대비 6개 축의 변화량이 모두 임계값(가속도 200, 자이로 50) 이상일 때만 움직임 있음(true)
-// 한 축이라도 임계값 미만이면 정지(false)로 간주 (실측으로 튜닝된 동작이므로 변경하지 않음)
+// 기준값(prev_*) 대비 변화량(원시값)이 임계값(가속도 MOVE_ACC_THRESHOLD, 자이로 MOVE_GYRO_THRESHOLD) 이상인 축이
+// MOVE_MIN_AXES개 이상이면 움직임 있음(true). 기본값 6은 "6축 모두 초과해야 움직임"인 기존 동작과 같음
+// (실측으로 튜닝된 동작이므로 기본값은 바꾸지 않음. 한 축만 움직이는 동작(예: 고개만 돌림)은 정지로 판정되어 'W'가 나갈 수 있음)
 boolean check_movement(float ch_AcX, float ch_AcY, float ch_AcZ, float ch_GyX, float ch_GyY, float ch_GyZ)
 {
-  if(ch_AcX<MOVE_ACC_THRESHOLD || ch_AcY<MOVE_ACC_THRESHOLD || ch_AcZ<MOVE_ACC_THRESHOLD || ch_GyX<MOVE_GYRO_THRESHOLD || ch_GyY<MOVE_GYRO_THRESHOLD || ch_GyZ<MOVE_GYRO_THRESHOLD) // 한 축이라도 변화량이 임계값 미만이면 정지
-  {
-    return false;
-  }
-  else
-  {
-    return true;
-  }
+  int moving_axes = 0;
+  if(ch_AcX >= MOVE_ACC_THRESHOLD) moving_axes++;
+  if(ch_AcY >= MOVE_ACC_THRESHOLD) moving_axes++;
+  if(ch_AcZ >= MOVE_ACC_THRESHOLD) moving_axes++;
+  if(ch_GyX >= MOVE_GYRO_THRESHOLD) moving_axes++;
+  if(ch_GyY >= MOVE_GYRO_THRESHOLD) moving_axes++;
+  if(ch_GyZ >= MOVE_GYRO_THRESHOLD) moving_axes++;
+  return moving_axes >= MOVE_MIN_AXES;
 }
 
 // 기준값(prev_*)과 현재 센서값이 6개 축 모두 같으면 true, 하나라도 다르면 false
