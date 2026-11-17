@@ -20,8 +20,10 @@ int count = 0;
 int angleChange = 0; // 자이로 3축 합성 각속도 크기(°/s) (이름과 달리 각도(°)가 아님)
 
 boolean fall = false; // 낙상이 감지되면 저장
-boolean fallAlert = false; // 낙상 확정 후 헬멧을 벗을 때까지 앱에 'F'를 계속 전송하기 위한 상태
+boolean fallAlert = false; // 낙상 확정 후 헬멧을 벗거나 일어설 때까지 앱에 'F'를 계속 전송하기 위한 상태
 int unwornLoops = 0; // 낙상 알림 중 연속으로 미착용이 감지된 루프 횟수
+boolean fallenPoseSeen = false; // 낙상 알림 중 헬멧이 기울어진(누운) 자세가 확인되었는지
+int uprightLoops = 0; // 누운 자세 확인 후 똑바로 선 자세가 연속된 루프 횟수
 boolean trigger1 = false; // 첫번째 트리거(하한 임계값)가 발생한 경우 저장
 boolean trigger2 = false; // 두번째 트리거(상한 임계값)가 발생한 경우 저장
 boolean trigger3 = false; // 세번째 트리거(방향 변경)가 발생한 경우 저장
@@ -53,6 +55,7 @@ BluetoothSerial SerialBT; // 블루투스 시리얼 라이브러리
 //   다만 판정 경로가 달라졌으므로(착용 중에만 낙상 시작, 낙상 확정 후 'F' 유지 전송 등)
 //   배포 전에 실제 낙상/일상동작 테스트로 아래 항목을 다시 확인하고 조정해야 한다.
 //   - 낙상: AMP_FREEFALL_MAX, AMP_IMPACT_MIN, ROTATION_MIN_DPS, ROTATION_MAX_DPS, STILL_MAX_DPS, TRIGGER*_LOOPS
+//   - 일어섬 판정: UPRIGHT_MIN_COS, STAND_UP_MIN_G, STAND_UP_HOLD_LOOPS (걷기/앉기/고개 숙임 동작에서 오해제·미해제 여부 확인)
 //   - 움직임/'W': MOVE_ACC_THRESHOLD, MOVE_GYRO_THRESHOLD, MOVE_MIN_AXES, NO_MOVE_LOOPS
 //   - 센서 오프셋(ACC/GYRO_OFFSET_*): 센서(기기)마다 다르므로 기기별로 다시 측정
 // 판정에 쓰는 기준값을 한곳에 모음 (값 자체는 기존 코드와 동일)
@@ -92,6 +95,12 @@ const int TRIGGER1_TIMEOUT_LOOPS = 6;  // 트리거1 이후 충격을 기다리�
 const int TRIGGER2_TIMEOUT_LOOPS = 6;  // 트리거2 이후 회전을 기다리는 루프 수
 const int TRIGGER3_HOLD_LOOPS = 10;    // 트리거3 이후 정지 여부를 판단하기까지의 루프 수
 const int FALL_ALERT_CLEAR_LOOPS = 10; // 낙상 알림 해제: 미착용이 이만큼 연속될 때 (근접센서 순간 오검출로 알림이 꺼지는 것을 방지)
+
+// 낙상 후 일어섬 판정: 낙상 알림 중 헬멧이 기울어졌다가(누운 자세) 다시 똑바로 선 자세가 일정 시간 유지되면 정상으로 복귀
+// ※ MPU6050 Z축이 헬멧을 똑바로 썼을 때의 수직 방향이라고 가정함(오프셋 보정 후 정지 시 az ≈ 1g). 장착 방향이 다르면 실기기에서 확인 필요
+const float UPRIGHT_MIN_COS = 0.7;   // 중력 방향 성분(az / 합성가속도)이 이 값 이상이면 똑바로 선 자세 (0.7 ≈ 수직에서 약 45도 이내)
+const float STAND_UP_MIN_G = 0.5;    // 합성 가속도가 이 값(g) 미만이면(자유낙하 등) 중력 방향을 알 수 없어 자세를 판단하지 않음
+const int STAND_UP_HOLD_LOOPS = 50;  // 똑바로 선 자세가 이만큼 연속되면 일어선 것으로 판단 (약 5초 이상)
 
 const unsigned long LOOP_DELAY_MS = 100; // loop() 끝에서 대기하는 시간
 
@@ -164,6 +173,14 @@ void resetFallTriggers() {
   trigger1count = 0;
   trigger2count = 0;
   trigger3count = 0;
+}
+
+// 낙상 알림 상태 초기화 (헬멧을 벗었거나 일어서서 정상으로 돌아온 경우)
+void resetFallAlert() {
+  fallAlert = false;
+  unwornLoops = 0;
+  fallenPoseSeen = false;
+  uprightLoops = 0;
 }
 
 // 앱에 낙상('F')을 전달
@@ -302,6 +319,29 @@ void loop() {
         Serial.println("TRIGGER 3 ACTIVATED");     
     }   
   }   
+  // 낙상 후 일어섬 판정: 'F' 전송 중(트리거3 진행 또는 낙상 알림)에 헬멧이 기울어졌다가(누운 자세) 다시 똑바로 선 채 유지되면 정상 복귀
+  // 한 번도 기울어진 적 없이 계속 서 있던 경우(예: 휘청였지만 넘어지지 않음)는 판단 근거가 없어 기존처럼 헬멧을 벗을 때까지 유지
+  if (trigger3 == true || fallAlert == true) {
+    if (Raw_Amp >= STAND_UP_MIN_G) { // 자유낙하 등 중력 방향을 알 수 없는 구간은 판단하지 않음
+      if (az < UPRIGHT_MIN_COS * Raw_Amp) { // 기울어진(누운) 자세
+        fallenPoseSeen = true;
+        uprightLoops = 0;
+      } else if (fallenPoseSeen == true && equip == true) { // 누웠다가 똑바로 선 자세 (착용 중)
+        uprightLoops++;
+      } else {
+        uprightLoops = 0;
+      }
+    }
+    if (uprightLoops >= STAND_UP_HOLD_LOOPS) {
+      Serial.println("STAND UP - fall alert cleared");
+      trigger3 = false;
+      trigger3count = 0;
+      resetFallAlert();
+    }
+  } else {
+    fallenPoseSeen = false;
+    uprightLoops = 0;
+  }
   if (trigger3 == true) {     
     if (trigger3count < TRIGGER3_HOLD_LOOPS) trigger3count++; // byte 변수라 계속 증가시키면 255에서 0으로 넘어가 10루프 동안 판정/'F' 전송이 끊기므로 기준값에서 멈춤
       
@@ -345,8 +385,7 @@ void loop() {
       unwornLoops++;
     }
     if (unwornLoops >= FALL_ALERT_CLEAR_LOOPS) { // 헬멧을 벗은 것으로 보이면 알림 해제
-      fallAlert = false;
-      unwornLoops = 0;
+      resetFallAlert();
     } else {
       sendFallAlert(); // 앱이 메시지마다 상태를 덮어쓰므로 해제될 때까지 매 사이클 반복 전송
     }
