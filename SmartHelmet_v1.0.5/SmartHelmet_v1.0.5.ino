@@ -20,6 +20,8 @@ int count = 0;
 int angleChange = 0; // 자이로 3축 합성 각속도 크기(°/s) (이름과 달리 각도(°)가 아님)
 
 boolean fall = false; // 낙상이 감지되면 저장
+boolean fallAlert = false; // 낙상 확정 후 헬멧을 벗을 때까지 앱에 'F'를 계속 전송하기 위한 상태
+int unwornLoops = 0; // 낙상 알림 중 연속으로 미착용이 감지된 루프 횟수
 boolean trigger1 = false; // 첫번째 트리거(하한 임계값)가 발생한 경우 저장
 boolean trigger2 = false; // 두번째 트리거(상한 임계값)가 발생한 경우 저장
 boolean trigger3 = false; // 세번째 트리거(방향 변경)가 발생한 경우 저장
@@ -78,6 +80,7 @@ const int STILL_MAX_DPS = 10;         // 낙상 확정: 이 각속도 이하면 
 const int TRIGGER1_TIMEOUT_LOOPS = 6;  // 트리거1 이후 충격을 기다리는 루프 수
 const int TRIGGER2_TIMEOUT_LOOPS = 6;  // 트리거2 이후 회전을 기다리는 루프 수
 const int TRIGGER3_HOLD_LOOPS = 10;    // 트리거3 이후 정지 여부를 판단하기까지의 루프 수
+const int FALL_ALERT_CLEAR_LOOPS = 10; // 낙상 알림 해제: 미착용이 이만큼 연속될 때 (근접센서 순간 오검출로 알림이 꺼지는 것을 방지)
 
 const unsigned long LOOP_DELAY_MS = 100; // loop() 끝에서 대기하는 시간
 
@@ -149,6 +152,15 @@ void resetFallTriggers() {
   trigger1count = 0;
   trigger2count = 0;
   trigger3count = 0;
+}
+
+// 앱에 낙상('F')을 전달
+// 앱은 수신한 메시지마다 상태 문구를 덮어쓰고, ':'로 나눈 두 번째 항목(arr[1])에서 'F'를 찾으므로
+// 'F'는 같은 사이클의 상태 메시지(E/N/W) 바로 뒤에 매 사이클 반복해서 보내야 화면에 유지됨
+void sendFallAlert() {
+  SerialBT.write('F');
+  SerialBT.print(":");
+  SerialBT.print("\n");
 }
 
 void loop() {
@@ -292,13 +304,11 @@ void loop() {
       }       
       else { // 합성 각속도가 10°/s를 초과하는 경우 (기존 주석: 사용자가 정상상태로 복귀)  
          
-        // ※ 확인 필요: 'F'는 낙상 확정 분기(fall = true)가 아니라 이 분기에서 전송됨
-        // 실제 낙상 테스트로 맞춘 동작일 수 있어 로직은 유지함. 앱에서 'F'를 어떻게 처리하는지 확인 후 정리 필요
+        // 충격 후 1초 이상 지났는데도 계속 움직이는 경우: 기존 동작대로 이 분기에서도 'F'를 전송
+        // (움직임이 멈추면 아래 낙상 확정 분기로 넘어가며, 그때부터는 fallAlert가 'F'를 이어서 전송)
         Serial.println("TRIGGER 3 DEACTIVATED");
 //        delay(1000);
-        SerialBT.write('F');
-        SerialBT.print(":");
-        SerialBT.print("\n"); 
+        sendFallAlert();
 
         if(equip == false)
         {
@@ -308,9 +318,24 @@ void loop() {
       }     
     }   
   }   
-  if (fall == true) { // 낙상 확정 시 (※ 현재는 시리얼 로그만 출력하고 블루투스 전송은 없음 - 위 'F' 전송 분기 참고)   
+  if (fall == true) { // 낙상 확정 시 (충격 후 합성 각속도가 정지 수준으로 유지됨)
     Serial.println("FALL DETECTED");       
     fall = false;   
+    fallAlert = true; // 기존에는 여기서 블루투스 전송이 없어, 쓰러져 움직이지 않는 상황이 앱에 전달되지 않았음
+    unwornLoops = 0;
+  }   
+  if (fallAlert) {
+    if (equip == true) {
+      unwornLoops = 0;
+    } else {
+      unwornLoops++;
+    }
+    if (unwornLoops >= FALL_ALERT_CLEAR_LOOPS) { // 헬멧을 벗은 것으로 보이면 알림 해제
+      fallAlert = false;
+      unwornLoops = 0;
+    } else {
+      sendFallAlert(); // 앱이 메시지마다 상태를 덮어쓰므로 해제될 때까지 매 사이클 반복 전송
+    }
   }   
   if (trigger2count >= TRIGGER2_TIMEOUT_LOOPS) { // 방향 변경 허용 시간: 루프 6회 (시간이 아닌 루프 횟수 기준이라 delay/통신 시간이 바뀌면 실제 시간도 달라짐)
      trigger2 = false; 
