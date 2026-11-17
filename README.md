@@ -45,6 +45,19 @@
 -------
 # 펌웨어(FW)
 
+### ⚠ 임계값 재측정/조정 필요
+
+코드의 임계값은 이전 로직으로 실제 낙상 테스트를 하며 맞춘 값이며, 이 버전에서 **값 자체는 바꾸지 않았습니다.**
+다만 판정 경로가 달라졌으므로(착용 중에만 낙상 시작, 낙상 확정 후 `F` 유지 전송 등) 배포 전에 실제 낙상/일상동작 테스트로 다시 확인하고 조정해야 합니다.
+
+| 구분 | 상수 | 재측정 시 확인할 점 |
+|---|---|---|
+| 낙상 | `AMP_FREEFALL_MAX`, `AMP_IMPACT_MIN`, `ROTATION_MIN_DPS`, `ROTATION_MAX_DPS`, `STILL_MAX_DPS`, `TRIGGER*_LOOPS` | 낙상/비낙상 동작(걷기, 앉기, 헬멧 던지기 등)의 합성 가속도·각속도 기록 |
+| 움직임/`W` | `MOVE_ACC_THRESHOLD`, `MOVE_GYRO_THRESHOLD`, `MOVE_MIN_AXES`, `NO_MOVE_LOOPS` | 정지/일상 동작에서 센서 노이즈와 축별 변화량. 현재 임계값(가속도 200≈0.012g, 자이로 50≈0.4°/s)은 노이즈 수준이라 `MOVE_MIN_AXES`를 낮추려면 임계값도 함께 맞춰야 함 |
+| 센서 오프셋 | `ACC_OFFSET_*`, `GYRO_OFFSET_*` | 센서(기기)마다 다르므로 기기별로 다시 측정 |
+
+시간 기준(`*_LOOPS`)은 시간이 아닌 루프 횟수입니다. 1회 = `LOOP_DELAY_MS`(100ms) + 센서/통신 처리 시간이라 실제 시간은 약간 더 깁니다.
+
 ### * 라이브러리 호출
 
 ``` c++
@@ -71,9 +84,13 @@ double angleFiX, angleFiY, angleFiZ, prev_angleFiX, prev_angleFiY, prev_angleFiZ
 boolean equip; // 착용상태 변수
 boolean movement; // 움직임 감지 변수
 int count = 0;
-int angleChange = 0; // 각도 변화량 초기화
+int angleChange = 0; // 자이로 3축 합성 각속도 크기(°/s) (이름과 달리 각도(°)가 아님)
 
 boolean fall = false; // 낙상이 감지되면 저장
+boolean fallAlert = false; // 낙상 확정 후 헬멧을 벗거나 일어설 때까지 앱에 'F'를 계속 전송하기 위한 상태
+int unwornLoops = 0; // 낙상 알림 중 연속으로 미착용이 감지된 루프 횟수
+boolean fallenPoseSeen = false; // 낙상 알림 중 헬멧이 기울어진(누운) 자세가 확인되었는지
+int uprightLoops = 0; // 누운 자세 확인 후 똑바로 선 자세가 연속된 루프 횟수
 boolean trigger1 = false; // 첫번째 트리거(하한 임계값)가 발생한 경우 저장
 boolean trigger2 = false; // 두번째 트리거(상한 임계값)가 발생한 경우 저장
 boolean trigger3 = false; // 세번째 트리거(방향 변경)가 발생한 경우 저장
@@ -98,6 +115,61 @@ double averGyX, averGyY, averGyZ; // 자이로의 평균 값
 double prev_sv; // 알고리즘 계산 값 저장
 
 BluetoothSerial SerialBT; // 블루투스 시리얼 라이브러리
+
+// ===================== 튜닝 파라미터 =====================
+// ※ 임계값 재측정/조정 필요
+//   아래 값들은 이전 로직 기준으로 실제 낙상 테스트를 하며 맞춘 값이며, 이 버전에서 값 자체는 바꾸지 않았다.
+//   다만 판정 경로가 달라졌으므로(착용 중에만 낙상 시작, 낙상 확정 후 'F' 유지 전송 등)
+//   배포 전에 실제 낙상/일상동작 테스트로 아래 항목을 다시 확인하고 조정해야 한다.
+//   - 낙상: AMP_FREEFALL_MAX, AMP_IMPACT_MIN, ROTATION_MIN_DPS, ROTATION_MAX_DPS, STILL_MAX_DPS, TRIGGER*_LOOPS
+//   - 일어섬 판정: UPRIGHT_MIN_COS, STAND_UP_MIN_G, STAND_UP_HOLD_LOOPS (걷기/앉기/고개 숙임 동작에서 오해제·미해제 여부 확인)
+//   - 움직임/'W': MOVE_ACC_THRESHOLD, MOVE_GYRO_THRESHOLD, MOVE_MIN_AXES, NO_MOVE_LOOPS
+//   - 센서 오프셋(ACC/GYRO_OFFSET_*): 센서(기기)마다 다르므로 기기별로 다시 측정
+// 판정에 쓰는 기준값을 한곳에 모음 (값 자체는 기존 코드와 동일)
+// 시간 기준은 loop() 1회 = LOOP_DELAY_MS(100ms) + 센서/통신 처리 시간의 '루프 횟수'
+
+// 센서 오프셋 보정값 (기기별로 실측한 원시값)
+const int ACC_OFFSET_X = 2050;
+const int ACC_OFFSET_Y = 77;
+const int ACC_OFFSET_Z = 1947;
+const int GYRO_OFFSET_X = -270;
+const int GYRO_OFFSET_Y = 351;
+const int GYRO_OFFSET_Z = -136;
+// 단위 변환 계수 (MPU6050 기본 측정 범위: 가속도 ±2g, 자이로 ±250°/s)
+const double ACC_LSB_PER_G = 16384.00;
+const double GYRO_LSB_PER_DPS = 131.07;
+
+// 착용 판정: 근접센서 값이 이 값을 초과하면 착용
+const int WEAR_PROXIMITY_MIN = 100;
+
+// 움직임 판정: 기준값(prev_*) 대비 변화량(원시값) 임계값
+const float MOVE_ACC_THRESHOLD = 200;
+const float MOVE_GYRO_THRESHOLD = 50;
+// 움직임으로 인정하기 위해 임계값을 넘어야 하는 축 수 (1~6). 6이면 6축 모두 넘어야 하는 기존 동작
+// ※ 임계값이 센서 노이즈 수준(가속도 200 ≈ 0.012g, 자이로 50 ≈ 0.4°/s)이라, 값을 낮추면 정지 상태 노이즈도 움직임으로 판정될 수 있음
+//   낮추려면 임계값도 함께 실측해서 다시 맞출 것
+const int MOVE_MIN_AXES = 6;
+// 이 횟수 이상 루프가 지난 뒤에도 움직임이 없으면 'W' 경고 전송 (약 30초 이상)
+const int NO_MOVE_LOOPS = 300;
+
+// 낙상 판정 (Amp는 합성 가속도 g * 10, 각속도 단위는 °/s)
+const int AMP_FREEFALL_MAX = 2;       // 트리거1: Amp 이하 (자유낙하)
+const int AMP_IMPACT_MIN = 12;        // 트리거2: Amp 이상 (충격)
+const int ROTATION_MIN_DPS = 30;      // 트리거3: 충격 직후 회전 각속도 하한
+const int ROTATION_MAX_DPS = 400;     // 트리거3: 충격 직후 회전 각속도 상한
+const int STILL_MAX_DPS = 10;         // 낙상 확정: 이 각속도 이하면 정지로 판단
+const int TRIGGER1_TIMEOUT_LOOPS = 6;  // 트리거1 이후 충격을 기다리는 루프 수
+const int TRIGGER2_TIMEOUT_LOOPS = 6;  // 트리거2 이후 회전을 기다리는 루프 수
+const int TRIGGER3_HOLD_LOOPS = 10;    // 트리거3 이후 정지 여부를 판단하기까지의 루프 수
+const int FALL_ALERT_CLEAR_LOOPS = 10; // 낙상 알림 해제: 미착용이 이만큼 연속될 때 (근접센서 순간 오검출로 알림이 꺼지는 것을 방지)
+
+// 낙상 후 일어섬 판정: 낙상 알림 중 헬멧이 기울어졌다가(누운 자세) 다시 똑바로 선 자세가 일정 시간 유지되면 정상으로 복귀
+// ※ MPU6050 Z축이 헬멧을 똑바로 썼을 때의 수직 방향이라고 가정함(오프셋 보정 후 정지 시 az ≈ 1g). 장착 방향이 다르면 실기기에서 확인 필요
+const float UPRIGHT_MIN_COS = 0.7;   // 중력 방향 성분(az / 합성가속도)이 이 값 이상이면 똑바로 선 자세 (0.7 ≈ 수직에서 약 45도 이내)
+const float STAND_UP_MIN_G = 0.5;    // 합성 가속도가 이 값(g) 미만이면(자유낙하 등) 중력 방향을 알 수 없어 자세를 판단하지 않음
+const int STAND_UP_HOLD_LOOPS = 50;  // 똑바로 선 자세가 이만큼 연속되면 일어선 것으로 판단 (약 5초 이상)
+
+const unsigned long LOOP_DELAY_MS = 100; // loop() 끝에서 대기하는 시간
 ```
 ### * 셋업함수 
 
@@ -145,31 +217,62 @@ void setup()
 ### * 움직임 체크 함수
 
 ``` c++
+// 기준값(prev_*) 대비 변화량(원시값)이 임계값(가속도 MOVE_ACC_THRESHOLD, 자이로 MOVE_GYRO_THRESHOLD) 이상인 축이
+// MOVE_MIN_AXES개 이상이면 움직임 있음(true). 기본값 6은 "6축 모두 초과해야 움직임"인 기존 동작과 같음
+// (실측으로 튜닝된 동작이므로 기본값은 바꾸지 않음. 한 축만 움직이는 동작(예: 고개만 돌림)은 정지로 판정되어 'W'가 나갈 수 있음)
 boolean check_movement(float ch_AcX, float ch_AcY, float ch_AcZ, float ch_GyX, float ch_GyY, float ch_GyZ)
 {
-  if(ch_AcX<200 || ch_AcY<200 || ch_AcZ<200 || ch_GyX<50 || ch_GyY<50 || ch_GyZ<50) //자이로 변화가 없을때
-  {
-    return false;
-  }
-  else
-  {
-    return true;
-  }
+  int moving_axes = 0;
+  if(ch_AcX >= MOVE_ACC_THRESHOLD) moving_axes++;
+  if(ch_AcY >= MOVE_ACC_THRESHOLD) moving_axes++;
+  if(ch_AcZ >= MOVE_ACC_THRESHOLD) moving_axes++;
+  if(ch_GyX >= MOVE_GYRO_THRESHOLD) moving_axes++;
+  if(ch_GyY >= MOVE_GYRO_THRESHOLD) moving_axes++;
+  if(ch_GyZ >= MOVE_GYRO_THRESHOLD) moving_axes++;
+  return moving_axes >= MOVE_MIN_AXES;
 }
 ```
 ### * 셋업당시 센서값과 현재 센서값 비교 함수
 
 ``` c++
+// 기준값(prev_*)과 현재 센서값이 6개 축 모두 같으면 true, 하나라도 다르면 false
+// (기존 else if 구조는 모든 경로에서 값을 반환하지 않아 정의되지 않은 동작이 될 수 있어, 결과는 같게 한 줄로 정리)
 boolean compare(float AcX, float AcY, float AcZ, float GyX, float GyY, float GyZ)
 {
-  if(prev_AcX != AcX || prev_AcY != AcY || prev_AcZ != AcZ || prev_GyX != GyX || prev_GyY != GyY || prev_GyZ != GyZ) // 셋업당시 센서값과 현재 센서값이 다르다면
-  {
-    return false;
-  }
-  else if(prev_AcX == AcX && prev_AcY == AcY && prev_AcZ == AcZ && prev_GyX == GyX && prev_GyY == GyY && prev_GyZ == GyZ)
-  {
-    return true;
-  }
+  return prev_AcX == AcX && prev_AcY == AcY && prev_AcZ == AcZ && prev_GyX == GyX && prev_GyY == GyY && prev_GyZ == GyZ;
+}
+```
+### * 낙상 트리거 초기화 함수
+
+``` c++
+// 낙상 판정용 트리거 상태 초기화 (센서 읽기 실패 시 이전 트리거가 이어지지 않도록 사용)
+void resetFallTriggers() {
+  trigger1 = false;
+  trigger2 = false;
+  trigger3 = false;
+  trigger1count = 0;
+  trigger2count = 0;
+  trigger3count = 0;
+}
+```
+### * 낙상 알림 전송 함수
+
+``` c++
+// 낙상 알림 상태 초기화 (헬멧을 벗었거나 일어서서 정상으로 돌아온 경우)
+void resetFallAlert() {
+  fallAlert = false;
+  unwornLoops = 0;
+  fallenPoseSeen = false;
+  uprightLoops = 0;
+}
+
+// 앱에 낙상('F')을 전달
+// 앱은 수신한 메시지마다 상태 문구를 덮어쓰고, ':'로 나눈 두 번째 항목(arr[1])에서 'F'를 찾으므로
+// 'F'는 같은 사이클의 상태 메시지(E/N/W) 바로 뒤에 매 사이클 반복해서 보내야 화면에 유지됨
+void sendFallAlert() {
+  SerialBT.write('F');
+  SerialBT.print(":");
+  SerialBT.print("\n");
 }
 ```
 ### * 루프 함수
@@ -179,19 +282,28 @@ void loop() {
   
   count++;
   
-  getData(); 
+  // I2C 수신에 실패하면 이전 센서값(또는 -1)으로 낙상/움직임을 판정하지 않도록 이번 사이클은 건너뜀
+  // 건너뛰는 동안 count는 계속 증가하고, 이어지던 낙상 트리거는 초기화됨
+  if (!getData()) {
+    Serial.println("MPU6050 read failed - skip this cycle");
+    resetFallTriggers();
+    delay(LOOP_DELAY_MS); // 정상 사이클과 같은 주기 유지
+    return;
+  }
   getDT();
 
-  ax = (AcX - 2050) / 16384.00;
-  ay = (AcY - 77) / 16384.00;
-  az = (AcZ - 1947) / 16384.00;
-  gx = (GyX + 270) / 131.07;
-  gy = (GyY - 351) / 131.07;
-  gz = (GyZ + 136) / 131.07;
+  // 실측으로 구한 센서별 오프셋을 보정한 뒤 단위 변환 (낙상 임계값이 이 보정값 기준으로 튜닝되어 있음)
+  // 가속도: 16384 LSB/g (±2g), 자이로: 131.07 LSB/(°/s) (±250°/s) - initSensor()의 기본 측정 범위 기준
+  ax = (AcX - ACC_OFFSET_X) / ACC_LSB_PER_G;
+  ay = (AcY - ACC_OFFSET_Y) / ACC_LSB_PER_G;
+  az = (AcZ - ACC_OFFSET_Z) / ACC_LSB_PER_G;
+  gx = (GyX - GYRO_OFFSET_X) / GYRO_LSB_PER_DPS;
+  gy = (GyY - GYRO_OFFSET_Y) / GYRO_LSB_PER_DPS;
+  gz = (GyZ - GYRO_OFFSET_Z) / GYRO_LSB_PER_DPS;
   // 3축에 대한 진폭 백터 계산
   
-  float Raw_Amp = pow(pow(ax, 2) + pow(ay, 2) + pow(az, 2), 0.5); // 로우데이터의 증폭값
-  int Amp = Raw_Amp * 10;  // 10을 곱한 값은 0에서 1사이
+  float Raw_Amp = pow(pow(ax, 2) + pow(ay, 2) + pow(az, 2), 0.5); // 가속도 3축 합성 크기 (단위: g)
+  int Amp = Raw_Amp * 10;  // 0.1g 단위 정수(소수점 절삭). 예: Amp 2 -> 0.2g 이상 0.3g 미만, Amp 12 -> 1.2g 이상 1.3g 미만
 
   boolean gyro_status = compare(AcX, AcY, AcZ, GyX, GyY, GyZ); // 자이로센서의 현재값과 초기값을 비교하여 저장
   
@@ -208,7 +320,7 @@ void loop() {
   if ( !apds.readProximity(proximity_data) ) {
     Serial.println("Error reading proximity value");
   } else {
-    if(proximity_data>100)
+    if(proximity_data>WEAR_PROXIMITY_MIN)
     {
       equip = true;
     }
@@ -223,11 +335,12 @@ void loop() {
   if(equip == true) // 착용중이고
   {
     
-    if(count>=300) // count가 300이상일 동안
+    if(count>=NO_MOVE_LOOPS) // count가 NO_MOVE_LOOPS(300) 이상일 동안 (루프 1회 약 100ms 이상이므로 약 30초 이상)
     {
      
-      if(movement == false) // 움직이 없다면
+      if(movement == false) // 움직임이 없다면
       {
+        // 위험 상태이므로 움직임이 감지될 때까지 매 사이클 반복 전송하는 것이 의도된 동작
         SerialBT.write('W'); // 블루투스로 'W' 경고상태 전달
         SerialBT.print(":"); 
         Serial.println('W');
@@ -265,13 +378,15 @@ void loop() {
     count = 0; // count도 동시에 초기화
   }
   
-  if (Amp <= 2 && trigger2 == false) { // 증폭값이 더 낮은 임계값을 깨는 경우 (0.4g)     
+  // 착용 중일 때만 낙상 판정을 시작: 벗어둔 헬멧을 떨어뜨리거나 옮기다 놓친 경우가 낙상으로 오검출되는 것을 방지
+  // (이미 시작된 판정은 낙상 중 헬멧이 밀려 근접센서 값이 바뀌어도 중단하지 않고 끝까지 진행)
+  if (Amp <= AMP_FREEFALL_MAX && trigger2 == false && equip == true) { // 합성 가속도가 하한 임계값 이하 (Amp <= 2, 즉 0.3g 미만) - 실측 튜닝값(기존 주석의 0.4g는 실제 코드와 달라 정정)     
     trigger1 = true;     
     Serial.println("TRIGGER 1 ACTIVATED");   
   }
   if (trigger1 == true) {     
     trigger1count++;     
-    if (Amp >= 12) { // 증폭값이 더 높은 임계값을 깨는 경우 (3g)
+    if (Amp >= AMP_IMPACT_MIN) { // 합성 가속도가 상한 임계값 이상 (Amp >= 12, 즉 1.2g 이상) - 실측 튜닝값(기존 주석의 3g는 실제 코드와 달라 정정)
          trigger2 = true;
          Serial.println("TRIGGER 2 ACTIVATED");
          trigger1 = false; 
@@ -282,7 +397,7 @@ void loop() {
       trigger2count++;
       angleChange = pow(pow(gx, 2) + pow(gy, 2) + pow(gz, 2), 0.5); 
       
-      if (angleChange >= 30 && angleChange <= 400) { // 각도가 80~100도 사이로 변경되는 경우   
+      if (angleChange >= ROTATION_MIN_DPS && angleChange <= ROTATION_MAX_DPS) { // 합성 각속도가 30~400°/s 범위인 경우 (각도가 아닌 각속도 기준)   
         trigger3 = true;
         trigger2 = false; 
         trigger2count = 0;       
@@ -290,27 +405,50 @@ void loop() {
         Serial.println("TRIGGER 3 ACTIVATED");     
     }   
   }   
+  // 낙상 후 일어섬 판정: 'F' 전송 중(트리거3 진행 또는 낙상 알림)에 헬멧이 기울어졌다가(누운 자세) 다시 똑바로 선 채 유지되면 정상 복귀
+  // 한 번도 기울어진 적 없이 계속 서 있던 경우(예: 휘청였지만 넘어지지 않음)는 판단 근거가 없어 기존처럼 헬멧을 벗을 때까지 유지
+  if (trigger3 == true || fallAlert == true) {
+    if (Raw_Amp >= STAND_UP_MIN_G) { // 자유낙하 등 중력 방향을 알 수 없는 구간은 판단하지 않음
+      if (az < UPRIGHT_MIN_COS * Raw_Amp) { // 기울어진(누운) 자세
+        fallenPoseSeen = true;
+        uprightLoops = 0;
+      } else if (fallenPoseSeen == true && equip == true) { // 누웠다가 똑바로 선 자세 (착용 중)
+        uprightLoops++;
+      } else {
+        uprightLoops = 0;
+      }
+    }
+    if (uprightLoops >= STAND_UP_HOLD_LOOPS) {
+      Serial.println("STAND UP - fall alert cleared");
+      trigger3 = false;
+      trigger3count = 0;
+      resetFallAlert();
+    }
+  } else {
+    fallenPoseSeen = false;
+    uprightLoops = 0;
+  }
   if (trigger3 == true) {     
-    trigger3count++;   
+    if (trigger3count < TRIGGER3_HOLD_LOOPS) trigger3count++; // byte 변수라 계속 증가시키면 255에서 0으로 넘어가 10루프 동안 판정/'F' 전송이 끊기므로 기준값에서 멈춤
       
-    if (trigger3count >= 10) {
+    if (trigger3count >= TRIGGER3_HOLD_LOOPS) {
        angleChange = pow(pow(gx, 2) + pow(gy, 2) + pow(gz, 2), 0.5);
        //delay(10);
 //       Serial.println(angleChange);
        
-      if ((angleChange >= 0) && (angleChange <= 10)) { // 각도가 0~10도 사이를 유지하는 경우      
+      if ((angleChange >= 0) && (angleChange <= STILL_MAX_DPS)) { // 합성 각속도가 0~10°/s 이하(거의 정지)로 유지되는 경우      
         fall = true; 
         trigger3 = false; 
         trigger3count = 0;         
 //        Serial.println(angleChange);       
       }       
-      else { // 사용자가 정상상태로 복귀  
+      else { // 합성 각속도가 10°/s를 초과하는 경우 (기존 주석: 사용자가 정상상태로 복귀)  
          
+        // 충격 후 1초 이상 지났는데도 계속 움직이는 경우: 기존 동작대로 이 분기에서도 'F'를 전송
+        // (움직임이 멈추면 아래 낙상 확정 분기로 넘어가며, 그때부터는 fallAlert가 'F'를 이어서 전송)
         Serial.println("TRIGGER 3 DEACTIVATED");
 //        delay(1000);
-        SerialBT.write('F');
-        SerialBT.print(":");
-        SerialBT.print("\n"); 
+        sendFallAlert();
 
         if(equip == false)
         {
@@ -320,21 +458,35 @@ void loop() {
       }     
     }   
   }   
-  if (fall == true) { // 추락감지 시   
+  if (fall == true) { // 낙상 확정 시 (충격 후 합성 각속도가 정지 수준으로 유지됨)
     Serial.println("FALL DETECTED");       
     fall = false;   
+    fallAlert = true; // 기존에는 여기서 블루투스 전송이 없어, 쓰러져 움직이지 않는 상황이 앱에 전달되지 않았음
+    unwornLoops = 0;
   }   
-  if (trigger2count >= 6) { // 방향 변경에 대한 시간 0.5초 허용
+  if (fallAlert) {
+    if (equip == true) {
+      unwornLoops = 0;
+    } else {
+      unwornLoops++;
+    }
+    if (unwornLoops >= FALL_ALERT_CLEAR_LOOPS) { // 헬멧을 벗은 것으로 보이면 알림 해제
+      resetFallAlert();
+    } else {
+      sendFallAlert(); // 앱이 메시지마다 상태를 덮어쓰므로 해제될 때까지 매 사이클 반복 전송
+    }
+  }   
+  if (trigger2count >= TRIGGER2_TIMEOUT_LOOPS) { // 방향 변경 허용 시간: 루프 6회 (시간이 아닌 루프 횟수 기준이라 delay/통신 시간이 바뀌면 실제 시간도 달라짐)
      trigger2 = false; 
      trigger2count = 0;
      Serial.println("TRIGGER 2 DECACTIVATED");
    }
-   if (trigger1count >= 6) { // 증폭값이 상한임계값을 깨기까지 0.5초 허용
+   if (trigger1count >= TRIGGER1_TIMEOUT_LOOPS) { // 상한 임계값을 넘기까지 허용 시간: 루프 6회 (약 0.6초 이상)
      trigger1 = false; 
      trigger1count = 0;
      Serial.println("TRIGGER 1 DECACTIVATED");
    }
-   delay(100);   
+   delay(LOOP_DELAY_MS);   
 }
 ```
 ### * 센서 초기화 함수
@@ -343,19 +495,23 @@ void loop() {
 void initSensor() {
   Wire.begin();
   Wire.beginTransmission(MPU_ADDR);   // I2C 통신용 어드레스(주소)
-  Wire.write(0x6B);    // MPU6050과 통신을 시작하기 위해서는 0x6B번지에    
-  Wire.write(0);
+  Wire.write(0x6B);    // PWR_MGMT_1 레지스터(0x6B): 기본값이 슬립 모드이므로
+  Wire.write(0);       // 0을 써서 슬립을 해제하고 측정을 시작 (측정 범위는 기본값 가속도 ±2g, 자이로 ±250°/s 사용)
   Wire.endTransmission(true);
 }
 ```
 ### * 센서 데이터 처리 함수
 
 ``` c++
-void getData() {
+// MPU6050에서 가속도/온도/자이로 14byte를 읽어 전역 변수에 저장
+// 반환값: 정상 수신이면 true, I2C 수신 실패면 false (실패 시 전역 센서값은 바꾸지 않고 이전 값을 유지)
+boolean getData() {
   Wire.beginTransmission(MPU_ADDR);
   Wire.write(0x3B);   // AcX 레지스터 위치(주소)를 지칭합니다
   Wire.endTransmission(false);
-  Wire.requestFrom(MPU_ADDR, 14, true);  // AcX 주소 이후의 14byte의 데이터를 요청
+  if (Wire.requestFrom(MPU_ADDR, 14, true) != 14) { // AcX 주소 이후의 14byte의 데이터를 요청
+    return false; // 14byte를 받지 못하면 Wire.read()가 -1을 반환해 잘못된 센서값이 만들어지므로 읽지 않음
+  }
   AcX = Wire.read() << 8 | Wire.read(); //두 개의 나뉘어진 바이트를 하나로 이어 붙여서 각 변수에 저장
   AcY = Wire.read() << 8 | Wire.read();
   AcZ = Wire.read() << 8 | Wire.read();
@@ -363,9 +519,10 @@ void getData() {
   GyX = Wire.read() << 8 | Wire.read();
   GyY = Wire.read() << 8 | Wire.read();
   GyZ = Wire.read() << 8 | Wire.read();
+  return true;
 }
 ```
-### * loop 한 사이클동안 걸리는 시간을 알기위한 함수
+### * loop 한 사이클동안 걸리는 시간을 알기위한 함수 (dt는 현재 낙상/움직임 판정에 사용되지 않음)
 
 ``` c++
 void getDT() {
@@ -374,7 +531,7 @@ void getDT() {
   past = now;
 }
 ```
-### * 센서의 초기값을 10회 정도 평균값으로 구하여 저장하는 함수
+### * 센서의 초기값을 10회 정도 평균값으로 구하여 저장하는 함수 (평균값은 현재 판정에 사용되지 않음)
 
 ``` c++
 void caliSensor() {
@@ -387,7 +544,7 @@ void caliSensor() {
     sumGyX+=GyX;  sumGyY+=GyY;  sumGyZ+=GyZ;
     delay(50);
   }
-  averAcX=sumAcX/10;  averAcY=sumAcY/10;  averAcZ=sumAcY/10;
+  averAcX=sumAcX/10;  averAcY=sumAcY/10;  averAcZ=sumAcZ/10;
   averGyX=sumGyX/10;  averGyY=sumGyY/10;  averGyZ=sumGyZ/10;
 }
 ```
