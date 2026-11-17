@@ -289,7 +289,7 @@ void loop() {
     }   
   }   
   if (trigger3 == true) {     
-    trigger3count++;   
+    if (trigger3count < TRIGGER3_HOLD_LOOPS) trigger3count++; // byte 변수라 계속 증가시키면 255에서 0으로 넘어가 10루프 동안 판정/'F' 전송이 끊기므로 기준값에서 멈춤
       
     if (trigger3count >= TRIGGER3_HOLD_LOOPS) {
        angleChange = pow(pow(gx, 2) + pow(gy, 2) + pow(gz, 2), 0.5);
