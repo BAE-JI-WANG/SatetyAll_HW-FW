@@ -45,6 +45,42 @@ double prev_sv; // 알고리즘 계산 값 저장
 
 BluetoothSerial SerialBT; // 블루투스 시리얼 라이브러리
 
+// ===================== 튜닝 파라미터 =====================
+// 판정에 쓰는 기준값을 한곳에 모음 (값 자체는 기존 코드와 동일)
+// 시간 기준은 loop() 1회 = LOOP_DELAY_MS(100ms) + 센서/통신 처리 시간의 '루프 횟수'
+
+// 센서 오프셋 보정값 (기기별로 실측한 원시값)
+const int ACC_OFFSET_X = 2050;
+const int ACC_OFFSET_Y = 77;
+const int ACC_OFFSET_Z = 1947;
+const int GYRO_OFFSET_X = -270;
+const int GYRO_OFFSET_Y = 351;
+const int GYRO_OFFSET_Z = -136;
+// 단위 변환 계수 (MPU6050 기본 측정 범위: 가속도 ±2g, 자이로 ±250°/s)
+const double ACC_LSB_PER_G = 16384.00;
+const double GYRO_LSB_PER_DPS = 131.07;
+
+// 착용 판정: 근접센서 값이 이 값을 초과하면 착용
+const int WEAR_PROXIMITY_MIN = 100;
+
+// 움직임 판정: 기준값(prev_*) 대비 변화량(원시값) 임계값
+const float MOVE_ACC_THRESHOLD = 200;
+const float MOVE_GYRO_THRESHOLD = 50;
+// 이 횟수 이상 루프가 지난 뒤에도 움직임이 없으면 'W' 경고 전송 (약 30초 이상)
+const int NO_MOVE_LOOPS = 300;
+
+// 낙상 판정 (Amp는 합성 가속도 g * 10, 각속도 단위는 °/s)
+const int AMP_FREEFALL_MAX = 2;       // 트리거1: Amp 이하 (자유낙하)
+const int AMP_IMPACT_MIN = 12;        // 트리거2: Amp 이상 (충격)
+const int ROTATION_MIN_DPS = 30;      // 트리거3: 충격 직후 회전 각속도 하한
+const int ROTATION_MAX_DPS = 400;     // 트리거3: 충격 직후 회전 각속도 상한
+const int STILL_MAX_DPS = 10;         // 낙상 확정: 이 각속도 이하면 정지로 판단
+const int TRIGGER1_TIMEOUT_LOOPS = 6;  // 트리거1 이후 충격을 기다리는 루프 수
+const int TRIGGER2_TIMEOUT_LOOPS = 6;  // 트리거2 이후 회전을 기다리는 루프 수
+const int TRIGGER3_HOLD_LOOPS = 10;    // 트리거3 이후 정지 여부를 판단하기까지의 루프 수
+
+const unsigned long LOOP_DELAY_MS = 100; // loop() 끝에서 대기하는 시간
+
 void setup() 
 {
   initSensor(); // 센서 초기화 함수
@@ -88,7 +124,7 @@ void setup()
 // 한 축이라도 임계값 미만이면 정지(false)로 간주 (실측으로 튜닝된 동작이므로 변경하지 않음)
 boolean check_movement(float ch_AcX, float ch_AcY, float ch_AcZ, float ch_GyX, float ch_GyY, float ch_GyZ)
 {
-  if(ch_AcX<200 || ch_AcY<200 || ch_AcZ<200 || ch_GyX<50 || ch_GyY<50 || ch_GyZ<50) // 한 축이라도 변화량이 임계값 미만이면 정지
+  if(ch_AcX<MOVE_ACC_THRESHOLD || ch_AcY<MOVE_ACC_THRESHOLD || ch_AcZ<MOVE_ACC_THRESHOLD || ch_GyX<MOVE_GYRO_THRESHOLD || ch_GyY<MOVE_GYRO_THRESHOLD || ch_GyZ<MOVE_GYRO_THRESHOLD) // 한 축이라도 변화량이 임계값 미만이면 정지
   {
     return false;
   }
@@ -124,19 +160,19 @@ void loop() {
   if (!getData()) {
     Serial.println("MPU6050 read failed - skip this cycle");
     resetFallTriggers();
-    delay(100); // 정상 사이클과 같은 주기 유지
+    delay(LOOP_DELAY_MS); // 정상 사이클과 같은 주기 유지
     return;
   }
   getDT();
 
   // 실측으로 구한 센서별 오프셋을 보정한 뒤 단위 변환 (낙상 임계값이 이 보정값 기준으로 튜닝되어 있음)
   // 가속도: 16384 LSB/g (±2g), 자이로: 131.07 LSB/(°/s) (±250°/s) - initSensor()의 기본 측정 범위 기준
-  ax = (AcX - 2050) / 16384.00;
-  ay = (AcY - 77) / 16384.00;
-  az = (AcZ - 1947) / 16384.00;
-  gx = (GyX + 270) / 131.07;
-  gy = (GyY - 351) / 131.07;
-  gz = (GyZ + 136) / 131.07;
+  ax = (AcX - ACC_OFFSET_X) / ACC_LSB_PER_G;
+  ay = (AcY - ACC_OFFSET_Y) / ACC_LSB_PER_G;
+  az = (AcZ - ACC_OFFSET_Z) / ACC_LSB_PER_G;
+  gx = (GyX - GYRO_OFFSET_X) / GYRO_LSB_PER_DPS;
+  gy = (GyY - GYRO_OFFSET_Y) / GYRO_LSB_PER_DPS;
+  gz = (GyZ - GYRO_OFFSET_Z) / GYRO_LSB_PER_DPS;
   // 3축에 대한 진폭 백터 계산
   
   float Raw_Amp = pow(pow(ax, 2) + pow(ay, 2) + pow(az, 2), 0.5); // 가속도 3축 합성 크기 (단위: g)
@@ -157,7 +193,7 @@ void loop() {
   if ( !apds.readProximity(proximity_data) ) {
     Serial.println("Error reading proximity value");
   } else {
-    if(proximity_data>100)
+    if(proximity_data>WEAR_PROXIMITY_MIN)
     {
       equip = true;
     }
@@ -172,7 +208,7 @@ void loop() {
   if(equip == true) // 착용중이고
   {
     
-    if(count>=300) // count가 300이상일 동안 (루프 1회 약 100ms 이상이므로 약 30초 이상)
+    if(count>=NO_MOVE_LOOPS) // count가 NO_MOVE_LOOPS(300) 이상일 동안 (루프 1회 약 100ms 이상이므로 약 30초 이상)
     {
      
       if(movement == false) // 움직임이 없다면
@@ -215,13 +251,13 @@ void loop() {
     count = 0; // count도 동시에 초기화
   }
   
-  if (Amp <= 2 && trigger2 == false) { // 합성 가속도가 하한 임계값 이하 (Amp <= 2, 즉 0.3g 미만) - 실측 튜닝값(기존 주석의 0.4g는 실제 코드와 달라 정정)     
+  if (Amp <= AMP_FREEFALL_MAX && trigger2 == false) { // 합성 가속도가 하한 임계값 이하 (Amp <= 2, 즉 0.3g 미만) - 실측 튜닝값(기존 주석의 0.4g는 실제 코드와 달라 정정)     
     trigger1 = true;     
     Serial.println("TRIGGER 1 ACTIVATED");   
   }
   if (trigger1 == true) {     
     trigger1count++;     
-    if (Amp >= 12) { // 합성 가속도가 상한 임계값 이상 (Amp >= 12, 즉 1.2g 이상) - 실측 튜닝값(기존 주석의 3g는 실제 코드와 달라 정정)
+    if (Amp >= AMP_IMPACT_MIN) { // 합성 가속도가 상한 임계값 이상 (Amp >= 12, 즉 1.2g 이상) - 실측 튜닝값(기존 주석의 3g는 실제 코드와 달라 정정)
          trigger2 = true;
          Serial.println("TRIGGER 2 ACTIVATED");
          trigger1 = false; 
@@ -232,7 +268,7 @@ void loop() {
       trigger2count++;
       angleChange = pow(pow(gx, 2) + pow(gy, 2) + pow(gz, 2), 0.5); 
       
-      if (angleChange >= 30 && angleChange <= 400) { // 합성 각속도가 30~400°/s 범위인 경우 (각도가 아닌 각속도 기준)   
+      if (angleChange >= ROTATION_MIN_DPS && angleChange <= ROTATION_MAX_DPS) { // 합성 각속도가 30~400°/s 범위인 경우 (각도가 아닌 각속도 기준)   
         trigger3 = true;
         trigger2 = false; 
         trigger2count = 0;       
@@ -243,12 +279,12 @@ void loop() {
   if (trigger3 == true) {     
     trigger3count++;   
       
-    if (trigger3count >= 10) {
+    if (trigger3count >= TRIGGER3_HOLD_LOOPS) {
        angleChange = pow(pow(gx, 2) + pow(gy, 2) + pow(gz, 2), 0.5);
        //delay(10);
 //       Serial.println(angleChange);
        
-      if ((angleChange >= 0) && (angleChange <= 10)) { // 합성 각속도가 0~10°/s 이하(거의 정지)로 유지되는 경우      
+      if ((angleChange >= 0) && (angleChange <= STILL_MAX_DPS)) { // 합성 각속도가 0~10°/s 이하(거의 정지)로 유지되는 경우      
         fall = true; 
         trigger3 = false; 
         trigger3count = 0;         
@@ -276,17 +312,17 @@ void loop() {
     Serial.println("FALL DETECTED");       
     fall = false;   
   }   
-  if (trigger2count >= 6) { // 방향 변경 허용 시간: 루프 6회 (시간이 아닌 루프 횟수 기준이라 delay/통신 시간이 바뀌면 실제 시간도 달라짐)
+  if (trigger2count >= TRIGGER2_TIMEOUT_LOOPS) { // 방향 변경 허용 시간: 루프 6회 (시간이 아닌 루프 횟수 기준이라 delay/통신 시간이 바뀌면 실제 시간도 달라짐)
      trigger2 = false; 
      trigger2count = 0;
      Serial.println("TRIGGER 2 DECACTIVATED");
    }
-   if (trigger1count >= 6) { // 상한 임계값을 넘기까지 허용 시간: 루프 6회 (약 0.6초 이상)
+   if (trigger1count >= TRIGGER1_TIMEOUT_LOOPS) { // 상한 임계값을 넘기까지 허용 시간: 루프 6회 (약 0.6초 이상)
      trigger1 = false; 
      trigger1count = 0;
      Serial.println("TRIGGER 1 DECACTIVATED");
    }
-   delay(100);   
+   delay(LOOP_DELAY_MS);   
 }
 
 void initSensor() {
