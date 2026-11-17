@@ -48,6 +48,13 @@ double prev_sv; // 알고리즘 계산 값 저장
 BluetoothSerial SerialBT; // 블루투스 시리얼 라이브러리
 
 // ===================== 튜닝 파라미터 =====================
+// ※ 임계값 재측정/조정 필요
+//   아래 값들은 이전 로직 기준으로 실제 낙상 테스트를 하며 맞춘 값이며, 이 버전에서 값 자체는 바꾸지 않았다.
+//   다만 판정 경로가 달라졌으므로(착용 중에만 낙상 시작, 낙상 확정 후 'F' 유지 전송 등)
+//   배포 전에 실제 낙상/일상동작 테스트로 아래 항목을 다시 확인하고 조정해야 한다.
+//   - 낙상: AMP_FREEFALL_MAX, AMP_IMPACT_MIN, ROTATION_MIN_DPS, ROTATION_MAX_DPS, STILL_MAX_DPS, TRIGGER*_LOOPS
+//   - 움직임/'W': MOVE_ACC_THRESHOLD, MOVE_GYRO_THRESHOLD, MOVE_MIN_AXES, NO_MOVE_LOOPS
+//   - 센서 오프셋(ACC/GYRO_OFFSET_*): 센서(기기)마다 다르므로 기기별로 다시 측정
 // 판정에 쓰는 기준값을 한곳에 모음 (값 자체는 기존 코드와 동일)
 // 시간 기준은 loop() 1회 = LOOP_DELAY_MS(100ms) + 센서/통신 처리 시간의 '루프 횟수'
 
