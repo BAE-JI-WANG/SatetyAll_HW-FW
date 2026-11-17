@@ -263,7 +263,9 @@ void loop() {
     count = 0; // count도 동시에 초기화
   }
   
-  if (Amp <= AMP_FREEFALL_MAX && trigger2 == false) { // 합성 가속도가 하한 임계값 이하 (Amp <= 2, 즉 0.3g 미만) - 실측 튜닝값(기존 주석의 0.4g는 실제 코드와 달라 정정)     
+  // 착용 중일 때만 낙상 판정을 시작: 벗어둔 헬멧을 떨어뜨리거나 옮기다 놓친 경우가 낙상으로 오검출되는 것을 방지
+  // (이미 시작된 판정은 낙상 중 헬멧이 밀려 근접센서 값이 바뀌어도 중단하지 않고 끝까지 진행)
+  if (Amp <= AMP_FREEFALL_MAX && trigger2 == false && equip == true) { // 합성 가속도가 하한 임계값 이하 (Amp <= 2, 즉 0.3g 미만) - 실측 튜닝값(기존 주석의 0.4g는 실제 코드와 달라 정정)     
     trigger1 = true;     
     Serial.println("TRIGGER 1 ACTIVATED");   
   }
